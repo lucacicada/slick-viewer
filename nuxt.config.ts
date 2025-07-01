@@ -27,10 +27,22 @@ export default defineNuxtConfig({
     '~/assets/css/main.css',
   ],
 
+  features: {
+    inlineStyles: false,
+  },
+
+  experimental: {
+    payloadExtraction: false,
+  },
+
   compatibilityDate: '2025-05-15',
 
   vite: {
-    plugins: <any>[
+    build: {
+      cssCodeSplit: false,
+    },
+
+    plugins: [
       tailwindcss(),
     ],
   },
