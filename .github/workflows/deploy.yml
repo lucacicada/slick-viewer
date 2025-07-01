@@ -17,7 +17,7 @@ jobs:
           node-version: '22'
           cache: 'pnpm'
 
-      - run: npx nuxt build --preset github_pages
+      - run: pnpm nuxt build --preset github_pages
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
