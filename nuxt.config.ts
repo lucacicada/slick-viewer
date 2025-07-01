@@ -37,12 +37,6 @@ export default defineNuxtConfig({
 
   compatibilityDate: '2025-05-15',
 
-  nitro: {
-    prerender: {
-      failOnError: false,
-    },
-  },
-
   vite: {
     build: {
       cssCodeSplit: false,

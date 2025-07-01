@@ -1,12 +1,12 @@
 <script setup lang="ts">
-const containerRef = useTemplateRef('containerRef')
+import type { ImageViewerOptions } from './components/ImageViewer.vue'
 
-const file = shallowRef()
+const dropDivEl = useTemplateRef('dropDivRef')
+
+const file = shallowRef<File>()
 const url = useObjectUrl(file)
 
-const src = computed(() => url.value || 'https://picsum.photos/seed/picsum/600/400')
-
-useDropZone(containerRef, {
+useDropZone(dropDivEl, {
   // dataTypes: [
   //   'image/jpeg',
   //   'image/png',
@@ -29,10 +29,24 @@ useDropZone(containerRef, {
     }
   },
 })
+
+const options = computed<ImageViewerOptions>(() => ({
+  src: url.value || 'https://picsum.photos/seed/picsum/600/400',
+  controls: {
+    pan: {
+      enabled: true,
+      button: ['left', 'middle'],
+    },
+    area: {
+      enabled: true,
+      button: 'right',
+    },
+  },
+}))
 </script>
 
 <template>
-  <div ref="containerRef" class="h-screen w-screen">
-    <ImageViewer :src="src" />
+  <div ref="dropDivRef" class="w-screen h-screen overflow-hidden">
+    <ImageViewer v-bind="options" />
   </div>
 </template>

@@ -1,19 +1,114 @@
 <script setup lang="ts">
 import type { FullGestureState, StateKey } from '@vueuse/gesture'
-import { onKeyDown, useImage } from '@vueuse/core'
+import { onKeyDown, useAsyncState } from '@vueuse/core'
 import { useDrag } from '@vueuse/gesture'
 import { ChevronDown, ImageIcon, ImageOff, Maximize, RotateCcw, RotateCw, SquarePower, Underline, ZoomIn, ZoomOut } from 'lucide-vue-next'
 
-const { src } = defineProps<{
-  src?: string
-}>()
+type MouseButton = 'left' | 'middle' | 'right'
+type Modifier = 'shift' | 'ctrl' | 'alt' | 'meta'
+type JoinModifiers<T extends string[], Acc extends string = ''>
+  = T extends [infer Head extends string, ...infer Tail extends string[]]
+    ? JoinModifiers<Tail, `${Acc}${Acc extends '' ? '' : '+'}${Head}`>
+    : Acc
 
-const CENTER_PADDING = 40
-const alwaysSuppressContextMenu = false
+// Accept MouseButton followed by 0 or more modifiers joined by '+'
+type ActionButton = `${MouseButton}${'' | `+${JoinModifiers<Modifier[]>}`}`
+
+export interface ImageViewerOptions {
+  src?: string
+  alwaysSuppressContextMenu?: boolean
+  padding?: number
+  controls?: {
+    pan?: {
+      enabled?: boolean
+      button?: ActionButton | ActionButton[]
+    }
+    area?: {
+      enabled?: boolean
+      button?: ActionButton | ActionButton[]
+    }
+    dragRotate?: {
+      enabled?: boolean
+      button?: ActionButton | ActionButton[]
+      margin?: number
+    }
+  }
+}
+
+const { src, alwaysSuppressContextMenu = false, controls, ...options } = defineProps<ImageViewerOptions>()
+
+interface Control {
+  enabled?: boolean
+  button?: ActionButton | ActionButton[]
+}
+
+function buttonMatch(event: MouseEvent, control: Control | undefined, defaults: { default: MouseButton | MouseButton[] }) {
+  if (control?.enabled === false) {
+    return false
+  }
+
+  let button: MouseButton
+
+  switch (event.button) {
+    case 0:
+      button = 'left'
+      break
+    case 1:
+      button = 'middle'
+      break
+    case 2:
+      button = 'right'
+      break
+    default:
+      return false
+  }
+
+  const buttonConfig = control?.button ?? defaults.default
+  const actionString: ActionButton[] = Array.isArray(buttonConfig) ? buttonConfig : [buttonConfig]
+
+  for (const action of actionString) {
+    const [actionButton, ...modifiers] = action.split('+') as [MouseButton, ...Modifier[]]
+    if (button === actionButton && (!modifiers.length || modifiers.every(mod => event[`${mod}Key`]))) {
+      return true
+    }
+  }
+}
+
+const CENTER_PADDING = computed(() => options.padding ?? 40)
 
 const containerRef = useTemplateRef('containerRef')
 
-const { state, error } = useImage(() => ({ src: src as string }))
+const { state, error, execute } = useAsyncState<HTMLImageElement | undefined>(
+  () => new Promise((resolve, reject) => {
+    const optionsValue = toValue(src) as string | { src: string } | undefined
+
+    if (!optionsValue) {
+      resolve(undefined)
+      return
+    }
+
+    const img = new Image()
+    img.src = typeof optionsValue === 'string' ? optionsValue : optionsValue.src
+
+    // Decode might run earlier than onload
+    img.decode().then(() => resolve(img)).catch(reject)
+
+    // onload can sometimes run before decode
+    img.onload = () => resolve(img)
+    img.onerror = reject
+  }),
+  undefined,
+  {
+    resetOnExecute: true,
+  },
+)
+
+watch(
+  () => toValue(src),
+  () => execute(),
+  { deep: true },
+)
+
 const computedNaturalWidth = computed(() => state.value?.naturalWidth || 0)
 const computedNaturalHeight = computed(() => state.value?.naturalHeight || 0)
 
@@ -46,17 +141,34 @@ function getSize() {
   }
 }
 
-function zoom(scaleFactor: number) {
+function zoom(scaleFactor: number, pivot?: { x: number, y: number }) {
   const size = getSize()
 
   if (!size) {
     return
   }
 
+  if (scaleFactor < 1) {
+    const matrix = transformMatrix.value
+    const currentScale = Math.sqrt(matrix.a * matrix.a + matrix.b * matrix.b)
+
+    // Get the size of the image after scaling
+    const currentWidth = Math.abs(currentScale * size.image.naturalWidth)
+    const currentHeight = Math.abs(currentScale * size.image.naturalHeight)
+
+    // Prevent zooming out too much
+    if (Math.max(currentWidth, currentHeight) < 50) {
+      return
+    }
+  }
+
+  const x = pivot?.x ?? size.image.naturalWidth / 2
+  const y = pivot?.y ?? size.image.naturalHeight / 2
+
   transformMatrix.value = transformMatrix.value
-    .translate(size.image.naturalWidth / 2, size.image.naturalHeight / 2)
+    .translate(x, y)
     .scale(scaleFactor)
-    .translate(-size.image.naturalWidth / 2, -size.image.naturalHeight / 2)
+    .translate(-x, -y)
 }
 
 function zoomAtMousePoint(scaleFactor: number, event: MouseEvent) {
@@ -73,34 +185,26 @@ function zoomAtMousePoint(scaleFactor: number, event: MouseEvent) {
   const inv = transformMatrix.value.inverse()
   const pointInImageCoords = inv.transformPoint(new DOMPoint(mouseX, mouseY))
 
-  if (scaleFactor < 1) {
-    // Get the size of the image after scaling
-    const currentWidth = (size.image.naturalWidth * transformMatrix.value.a)
-    const currentHeight = (size.image.naturalHeight * transformMatrix.value.d)
-
-    // Prevent zooming out too much
-    if (Math.max(currentWidth, currentHeight) < 50) {
-      return
-    }
-  }
-
-  transformMatrix.value = transformMatrix.value
-    .translate(pointInImageCoords.x, pointInImageCoords.y)
-    .scale(scaleFactor)
-    .translate(-pointInImageCoords.x, -pointInImageCoords.y)
+  zoom(scaleFactor, {
+    x: pointInImageCoords.x,
+    y: pointInImageCoords.y,
+  })
 }
 
-function rotate(deg: number) {
+function rotate(deg: number, pivot?: { x: number, y: number }) {
   const size = getSize()
 
   if (!size) {
     return
   }
 
+  const x = pivot?.x ?? size.image.naturalWidth / 2
+  const y = pivot?.y ?? size.image.naturalHeight / 2
+
   transformMatrix.value = transformMatrix.value
-    .translate(size.image.naturalWidth / 2, size.image.naturalHeight / 2)
+    .translate(x, y)
     .rotate(deg)
-    .translate(-size.image.naturalWidth / 2, -size.image.naturalHeight / 2)
+    .translate(-x, -y)
 }
 
 function rotateAtMousePoint(deg: number, event: MouseEvent) {
@@ -117,10 +221,10 @@ function rotateAtMousePoint(deg: number, event: MouseEvent) {
 
   const pointInImageCoords = inv.transformPoint(new DOMPoint(mouseX, mouseY))
 
-  transformMatrix.value = transformMatrix.value
-    .translate(pointInImageCoords.x, pointInImageCoords.y)
-    .rotate(deg)
-    .translate(-pointInImageCoords.x, -pointInImageCoords.y)
+  rotate(deg, {
+    x: pointInImageCoords.x,
+    y: pointInImageCoords.y,
+  })
 }
 
 function rotateExact(deg: number) {
@@ -146,8 +250,8 @@ function centerImage() {
   }
 
   const scale = Math.min(
-    (size.container.width - CENTER_PADDING) / size.image.naturalWidth,
-    (size.container.height - CENTER_PADDING) / size.image.naturalHeight,
+    (size.container.width - CENTER_PADDING.value) / size.image.naturalWidth,
+    (size.container.height - CENTER_PADDING.value) / size.image.naturalHeight,
   )
 
   transformMatrix.value = new DOMMatrix()
@@ -195,12 +299,23 @@ function select(area: { x: number, y: number, w: number, h: number }) {
   transformMatrix.value = m
 }
 
+const context = {
+  zoom,
+  zoomAtMousePoint,
+  rotate,
+  rotateAtMousePoint,
+  rotateExact,
+  centerImage,
+  pad,
+  select,
+}
+
 // state is never updated in SSR
-watchImmediate(state, (newState) => {
-  if (newState) {
-    centerImage()
-  }
-})
+watch(
+  state,
+  () => centerImage(),
+  { immediate: true },
+)
 
 /**
  * Keyboard Shortcuts
@@ -216,72 +331,38 @@ watchImmediate(state, (newState) => {
  * - I: Toggle image info
  */
 
-// Center the image on space key press
-onKeyDown(' ', (event) => {
-  event.preventDefault()
-  event.stopPropagation()
-  event.stopImmediatePropagation()
+const shortcuts: Record<string, () => void> = {
+  ' ': centerImage,
+  'Escape': () => rotateExact(0),
+  'ArrowLeft': () => rotate(-10),
+  'ArrowRight': () => rotate(10),
+  '+': () => zoom(1.1),
+  '-': () => zoom(0.9),
+}
 
-  centerImage()
-}, {
-  dedupe: true,
-})
+useEventListener(
+  'keydown',
+  (event: KeyboardEvent) => {
+    if (event.repeat) {
+      return
+    }
 
-onKeyDown('Escape', (event) => {
-  event.preventDefault()
-  event.stopPropagation()
-  event.stopImmediatePropagation()
+    if (event.key in shortcuts) {
+      event.preventDefault()
+      event.stopPropagation()
+      event.stopImmediatePropagation()
 
-  rotateExact(0)
-}, {
-  dedupe: true,
-})
-
-onKeyDown('ArrowLeft', (event) => {
-  event.preventDefault()
-  event.stopPropagation()
-  event.stopImmediatePropagation()
-
-  rotate(-10)
-}, {
-  dedupe: true,
-})
-
-onKeyDown('ArrowRight', (event) => {
-  event.preventDefault()
-  event.stopPropagation()
-  event.stopImmediatePropagation()
-
-  rotate(10)
-}, {
-  dedupe: true,
-})
-
-onKeyDown('+', (event) => {
-  event.preventDefault()
-  event.stopPropagation()
-  event.stopImmediatePropagation()
-
-  zoom(1.1)
-}, {
-  dedupe: true,
-})
-
-onKeyDown('-', (event) => {
-  event.preventDefault()
-  event.stopPropagation()
-  event.stopImmediatePropagation()
-
-  zoom(0.9)
-}, {
-  dedupe: true,
-})
+      shortcuts[event.key]()
+    }
+  },
+  false,
+)
 
 let suppressContextMenu = false
 
 const pointer = ref({
   pointerId: undefined as number | undefined,
-  down: false as 'pad' | 'area' | false,
+  down: false as 'pan' | 'area' | false,
   startX: 0,
   startY: 0,
   x: 0,
@@ -308,19 +389,20 @@ const area = computed(() => {
   return null
 })
 
-const IGNORE_L_CLICK = false
-
 useEventListener(containerRef, 'pointerdown', (event) => {
   if (event.shiftKey || event.ctrlKey) {
     return
   }
 
-  // Left, middle or right click only
-  if (event.button < 0 || event.button > 2) {
-    return
-  }
+  let action: 'pan' | 'area'
 
-  if (IGNORE_L_CLICK && event.button === 0) {
+  if (buttonMatch(event, controls?.pan, { default: ['left', 'middle'] })) {
+    action = 'pan'
+  }
+  else if (buttonMatch(event, controls?.area, { default: 'right' })) {
+    action = 'area'
+  }
+  else {
     return
   }
 
@@ -330,7 +412,7 @@ useEventListener(containerRef, 'pointerdown', (event) => {
 
   pointer.value = {
     pointerId: event.pointerId,
-    down: event.button === 0 || event.button === 1 ? 'pad' : 'area',
+    down: action,
     startX: event.clientX,
     startY: event.clientY,
     x: event.clientX,
@@ -348,7 +430,7 @@ useEventListener('pointermove', (event) => {
   pointer.value.x = event.clientX
   pointer.value.y = event.clientY
 
-  if (pointer.value.down === 'pad') {
+  if (pointer.value.down === 'pan') {
     pad(deltaX, deltaY)
   }
 
@@ -388,7 +470,6 @@ useEventListener(containerRef, 'contextmenu', (event) => {
     event.stopImmediatePropagation()
   }
 }, {
-  capture: true,
   passive: false,
 })
 
@@ -409,9 +490,6 @@ useEventListener(containerRef, 'wheel', (event) => {
   else {
     zoomAtMousePoint(event.deltaY < 0 ? 1.1 : 0.9, event)
   }
-}, {
-  capture: true,
-  passive: false,
 })
 
 // Fix for some wired glitch when the image overflows the container in rare occasions on first load
@@ -468,30 +546,22 @@ useDrag(onDrag, { domTarget: a4, eventOptions: { passive: false } })
     <div ref="a3" class="cursor-move absolute z-10 w-[60px] inset-y-0 right-0" />
 
     <img
-      class="absolute top-0 left-0 block origin-top-left"
+      class="absolute top-0 left-0 block origin-top-left will-change-transform p-0 m-0"
       :src="src"
       :width="computedNaturalWidth"
       :height="computedNaturalHeight"
       :style="{
-        'will-change': 'transform',
-        'display': 'block',
-        'position': 'absolute',
-        'top': 0,
-        'left': 0,
-        'margin': 0,
-        'padding': 0,
         'width': `${computedNaturalWidth}px`,
         'height': `${computedNaturalHeight}px`,
         'min-width': `${computedNaturalWidth}px`,
         'min-height': `${computedNaturalHeight}px`,
         'max-width': `${computedNaturalWidth}px`,
         'max-height': `${computedNaturalHeight}px`,
-        'transform-origin': '0 0',
         'transform': String(transformMatrix || 'matrix(1, 0, 0, 1, 0, 0)'),
       }"
     >
 
-    <div v-if="error" class="text-white bg-black/50 relative z-10">
+    <div v-if="error" class="relative z-10 text-white bg-black/50">
       Unable to load the image
     </div>
 

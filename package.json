@@ -2,7 +2,7 @@
   "name": "slick-viewer",
   "type": "module",
   "private": true,
-  "packageManager": "pnpm@10.12.4+sha512.5ea8b0deed94ed68691c9bad4c955492705c5eeb8a87ef86bc62c74a26b037b08ff9570f108b2e4dbd1dd1a9186fea925e527f141c648e85af45631074680184",
+  "packageManager": "pnpm@10.12.4",
   "scripts": {
     "build": "nuxt build",
     "dev": "nuxt dev",
@@ -13,21 +13,20 @@
     "lint:fix": "eslint --fix"
   },
   "dependencies": {
-    "@tailwindcss/vite": "^4.1.11",
-    "@thednp/dommatrix": "^2.0.12",
     "@vueuse/core": "^13.4.0",
     "@vueuse/gesture": "^2.0.0",
     "lucide-vue-next": "^0.524.0",
     "nuxt": "^3.17.5",
-    "tailwindcss": "^4.1.11",
     "vue": "^3.5.17",
     "vue-router": "^4.5.1"
   },
   "devDependencies": {
     "@antfu/eslint-config": "^4.16.1",
     "@nuxt/eslint": "^1.4.1",
+    "@tailwindcss/vite": "^4.1.11",
     "@vueuse/nuxt": "^13.4.0",
-    "eslint": "^9.30.0"
+    "eslint": "^9.30.0",
+    "tailwindcss": "^4.1.11"
   },
   "pnpm": {
     "neverBuiltDependencies": []
