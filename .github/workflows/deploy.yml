@@ -6,21 +6,32 @@ on:
     branches:
       - main
 
+env:
+  NUXT_APP_BASE_URL: ${{ vars.NUXT_APP_BASE_URL }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: pnpm/action-setup@v4
+        name: Install pnpm
+        with:
+          run_install: false
+
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: 22
           cache: 'pnpm'
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile
 
-      - run: pnpm nuxt build --preset github_pages
+      - name: Build the project
+      - run: pnpm run build --preset github_pages
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
@@ -28,15 +39,17 @@ jobs:
 
   deploy:
     needs: build
+
     permissions:
       pages: write
       id-token: write
 
     environment:
-      name: github-pages
+      name: github_pages
       url: ${{ steps.deployment.outputs.page_url }}
 
     runs-on: ubuntu-latest
+
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
