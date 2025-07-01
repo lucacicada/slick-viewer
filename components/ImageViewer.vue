@@ -24,80 +24,175 @@ const rotationInDeg = computed(() => {
     return 0
   }
 
-  const angle = Math.atan2(transformMatrix.value.b, transformMatrix.value.a)
-  return angle * (180 / Math.PI)
+  let angle = Math.atan2(transformMatrix.value.b, transformMatrix.value.a)
+  angle = angle * (180 / Math.PI)
+
+  // FIXME: the angle sometimes is very close to 0, but not exactly 0
+  // this is likely due to rotateExact that try to subtract the current angle
+  return Math.abs(angle) < 0.0001 ? 0 : angle
 })
 
+function getSize() {
+  const rect = containerRef.value?.getBoundingClientRect()
+  const i = state.value
+
+  if (!transformMatrix.value || !i || !rect || !i.naturalWidth || !i.naturalHeight) {
+    return null
+  }
+
+  return {
+    container: rect,
+    image: i,
+  }
+}
+
 function zoom(scaleFactor: number) {
-  if (!containerRef.value || !state.value) {
+  const size = getSize()
+
+  if (!size) {
     return
   }
 
-  const imageNaturalWidth = state.value.naturalWidth
-  const imageNaturalHeight = state.value.naturalHeight
+  transformMatrix.value = transformMatrix.value
+    .translate(size.image.naturalWidth / 2, size.image.naturalHeight / 2)
+    .scale(scaleFactor)
+    .translate(-size.image.naturalWidth / 2, -size.image.naturalHeight / 2)
+}
+
+function zoomAtMousePoint(scaleFactor: number, event: MouseEvent) {
+  const size = getSize()
+
+  if (!size) {
+    return
+  }
+
+  const rect = size.container
+  const mouseX = event.clientX - rect.left
+  const mouseY = event.clientY - rect.top
+
+  const inv = transformMatrix.value.inverse()
+  const pointInImageCoords = inv.transformPoint(new DOMPoint(mouseX, mouseY))
+
+  if (scaleFactor < 1) {
+    // Get the size of the image after scaling
+    const currentWidth = (size.image.naturalWidth * transformMatrix.value.a)
+    const currentHeight = (size.image.naturalHeight * transformMatrix.value.d)
+
+    // Prevent zooming out too much
+    if (Math.max(currentWidth, currentHeight) < 50) {
+      return
+    }
+  }
 
   transformMatrix.value = transformMatrix.value
-    .translate(
-      imageNaturalWidth / 2,
-      imageNaturalHeight / 2,
-    )
+    .translate(pointInImageCoords.x, pointInImageCoords.y)
     .scale(scaleFactor)
-    .translate(
-      -imageNaturalWidth / 2,
-      -imageNaturalHeight / 2,
-    )
+    .translate(-pointInImageCoords.x, -pointInImageCoords.y)
 }
 
 function rotate(deg: number) {
-  transformMatrix.value = transformMatrix.value
-    .translate(
-      (state.value?.naturalWidth ?? 0) / 2,
-      (state.value?.naturalHeight ?? 0) / 2,
-    )
-    .rotate(deg)
-    .translate(
-      -(state.value?.naturalWidth ?? 0) / 2,
-      -(state.value?.naturalHeight ?? 0) / 2,
-    )
-}
+  const size = getSize()
 
-function resetRotation() {
-  transformMatrix.value = transformMatrix.value
-    .translate(
-      (state.value?.naturalWidth ?? 0) / 2,
-      (state.value?.naturalHeight ?? 0) / 2,
-    )
-    .rotate(-Math.atan2(transformMatrix.value.b, transformMatrix.value.a) * (180 / Math.PI))
-    .translate(
-      -(state.value?.naturalWidth ?? 0) / 2,
-      -(state.value?.naturalHeight ?? 0) / 2,
-    )
-}
-
-function centerImage() {
-  if (!transformMatrix.value || !containerRef.value) {
+  if (!size) {
     return
   }
 
-  const rect = containerRef.value.getBoundingClientRect()
+  transformMatrix.value = transformMatrix.value
+    .translate(size.image.naturalWidth / 2, size.image.naturalHeight / 2)
+    .rotate(deg)
+    .translate(-size.image.naturalWidth / 2, -size.image.naturalHeight / 2)
+}
 
-  const imageW = computedNaturalWidth.value
-  const imageH = computedNaturalHeight.value
+function rotateAtMousePoint(deg: number, event: MouseEvent) {
+  const size = getSize()
 
-  if (imageW === 0 || imageH === 0) {
-    transformMatrix.value = new DOMMatrix()
+  if (!size) {
+    return
+  }
+
+  const inv = transformMatrix.value.inverse()
+  const rect = size.container
+  const mouseX = event.clientX - rect.left
+  const mouseY = event.clientY - rect.top
+
+  const pointInImageCoords = inv.transformPoint(new DOMPoint(mouseX, mouseY))
+
+  transformMatrix.value = transformMatrix.value
+    .translate(pointInImageCoords.x, pointInImageCoords.y)
+    .rotate(deg)
+    .translate(-pointInImageCoords.x, -pointInImageCoords.y)
+}
+
+function rotateExact(deg: number) {
+  const size = getSize()
+
+  if (!size) {
+    return
+  }
+
+  transformMatrix.value = transformMatrix.value
+    .translate(size.image.naturalWidth / 2, size.image.naturalHeight / 2)
+    // FIXME: subtract the current rotation works, but we may hit float point precision issues thus the rotation is set to -0.00000000001
+    .rotate(-Math.atan2(transformMatrix.value.b, transformMatrix.value.a) * (180 / Math.PI))
+    .rotate(deg)
+    .translate(-size.image.naturalWidth / 2, -size.image.naturalHeight / 2)
+}
+
+function centerImage() {
+  const size = getSize()
+
+  if (!size) {
     return
   }
 
   const scale = Math.min(
-    (rect.width - CENTER_PADDING) / imageW,
-    (rect.height - CENTER_PADDING) / imageH,
+    (size.container.width - CENTER_PADDING) / size.image.naturalWidth,
+    (size.container.height - CENTER_PADDING) / size.image.naturalHeight,
   )
 
   transformMatrix.value = new DOMMatrix()
-    .translate(rect.width / 2, rect.height / 2)
+    .translate(size.container.width / 2, size.container.height / 2)
     .scale(scale)
-    .translate(-imageW / 2, -imageH / 2)
+    .translate(-size.image.naturalWidth / 2, -size.image.naturalHeight / 2)
+}
+
+/**
+ * Pad in screen coordinates.
+ * Useful to drag the image around with the mouse.
+ */
+function pad(x: number, y: number) {
+  const size = getSize()
+
+  if (!size) {
+    return
+  }
+
+  const inv = transformMatrix.value.inverse()
+  const origin = inv.transformPoint(new DOMPoint(0, 0))
+  const moved = inv.transformPoint(new DOMPoint(x, y))
+
+  const localDeltaX = moved.x - origin.x
+  const localDeltaY = moved.y - origin.y
+
+  transformMatrix.value = transformMatrix.value.translate(localDeltaX, localDeltaY)
+}
+
+// FIXME: the selection is wrong, we need to take the image offset into account
+function select(area: { x: number, y: number, w: number, h: number }) {
+  const size = getSize()
+
+  if (!size) {
+    return
+  }
+
+  const m = new DOMMatrix(transformMatrix.value as any)
+
+  const scale = Math.min(size.container.width / area.w, size.container.height / area.h)
+  m.scaleSelf(scale, scale)
+
+  m.translateSelf(-area.x, -area.y)
+
+  transformMatrix.value = m
 }
 
 // state is never updated in SSR
@@ -137,21 +232,7 @@ onKeyDown('Escape', (event) => {
   event.stopPropagation()
   event.stopImmediatePropagation()
 
-  const rect = containerRef.value?.getBoundingClientRect()
-  const rectW = rect?.width || 0
-  const rectH = rect?.height || 0
-
-  // Reset the transform matrix to the initial state
-  // center the image in the container
-  transformMatrix.value = new DOMMatrix()
-    .translate(
-      (rectW) / 2,
-      (rectH) / 2,
-    )
-    .translate(
-      -(computedNaturalWidth.value) / 2,
-      -(computedNaturalHeight.value) / 2,
-    )
+  rotateExact(0)
 }, {
   dedupe: true,
 })
@@ -257,7 +338,7 @@ useEventListener(containerRef, 'pointerdown', (event) => {
   }
 })
 
-useEventListener(containerRef, 'pointermove', (event) => {
+useEventListener('pointermove', (event) => {
   if (!pointer.value.down || event.pointerId !== pointer.value.pointerId) {
     return
   }
@@ -268,14 +349,7 @@ useEventListener(containerRef, 'pointermove', (event) => {
   pointer.value.y = event.clientY
 
   if (pointer.value.down === 'pad') {
-    const inv = transformMatrix.value.inverse()
-    const origin = inv.transformPoint(new DOMPoint(0, 0))
-    const moved = inv.transformPoint(new DOMPoint(deltaX, deltaY))
-
-    const localDeltaX = moved.x - origin.x
-    const localDeltaY = moved.y - origin.y
-
-    transformMatrix.value = transformMatrix.value.translate(localDeltaX, localDeltaY)
+    pad(deltaX, deltaY)
   }
 
   const movementX = pointer.value.startX - pointer.value.x
@@ -291,18 +365,8 @@ useEventListener(['pointerup', 'pointercancel'], (event) => {
     return
   }
 
-  const _area = area.value
-  if (_area) {
-    const rect = containerRef.value!.getBoundingClientRect()
-
-    const m = new DOMMatrix(transformMatrix.value as any)
-
-    const scale = Math.min(rect.width / _area.w, rect.height / _area.h)
-    m.scaleSelf(scale, scale)
-
-    m.translateSelf(-_area.x, -_area.y)
-
-    transformMatrix.value = m
+  if (area.value) {
+    select(area.value)
   }
 
   pointer.value.pointerId = undefined
@@ -329,67 +393,28 @@ useEventListener(containerRef, 'contextmenu', (event) => {
 })
 
 useEventListener(containerRef, 'wheel', (event) => {
-  if (event.ctrlKey) {
-    return
-  }
+  // if (event.ctrlKey) {
+  //   return
+  // }
 
   event.preventDefault()
   event.stopPropagation()
   event.stopImmediatePropagation()
 
-  if (!containerRef.value) {
-    return
-  }
-
   // Rotate instead of zooming under the cursor
   if (event.shiftKey) {
     const angle = Math.sign(event.deltaY) * 15 // Rotate 15 degrees per scroll step
-
-    const inv = transformMatrix.value.inverse()
-    const rect = containerRef.value.getBoundingClientRect()
-    const mouseX = event.clientX - rect.left
-    const mouseY = event.clientY - rect.top
-
-    const pointInImageCoords = inv.transformPoint(new DOMPoint(mouseX, mouseY))
-
-    transformMatrix.value = transformMatrix.value
-      .translate(pointInImageCoords.x, pointInImageCoords.y)
-      .rotate(angle)
-      .translate(-pointInImageCoords.x, -pointInImageCoords.y)
-
-    return
+    rotateAtMousePoint(angle, event)
   }
-
-  const rect = containerRef.value.getBoundingClientRect()
-  const mouseX = event.clientX - rect.left
-  const mouseY = event.clientY - rect.top
-
-  const inv = transformMatrix.value.inverse()
-  const pointInImageCoords = inv.transformPoint(new DOMPoint(mouseX, mouseY))
-
-  const scaleFactor = Math.sign(event.deltaY) > 0 ? 0.9 : 1.1
-
-  if (scaleFactor < 1) {
-    // Get the size of the image after scaling
-    const currentWidth = (state.value?.naturalWidth ?? 0) * transformMatrix.value.a
-    const currentHeight = (state.value?.naturalHeight ?? 0) * transformMatrix.value.d
-
-    // Prevent zooming out too much
-    if (Math.max(currentWidth, currentHeight) < 50) {
-      return
-    }
+  else {
+    zoomAtMousePoint(event.deltaY < 0 ? 1.1 : 0.9, event)
   }
-
-  transformMatrix.value = transformMatrix.value
-    .translate(pointInImageCoords.x, pointInImageCoords.y)
-    .scale(scaleFactor)
-    .translate(-pointInImageCoords.x, -pointInImageCoords.y)
 }, {
   capture: true,
   passive: false,
 })
 
-// This will fix some wired glitch when the image overflows the container in rare occasions
+// Fix for some wired glitch when the image overflows the container in rare occasions on first load
 const { stop } = useResizeObserver(containerRef, () => {
   centerImage()
   stop()
@@ -417,20 +442,7 @@ function onDrag(e: Omit<FullGestureState<StateKey<'drag'>>, 'event'> & { event: 
 
     const angle = (x + y) * (Math.PI / 180)
 
-    // Rotate the image around its center
-    const centerX = (state.value?.naturalWidth ?? 0) / 2
-    const centerY = (state.value?.naturalHeight ?? 0) / 2
-
-    transformMatrix.value = transformMatrix.value
-      .translate(
-        centerX,
-        centerY,
-      )
-      .rotate(angle)
-      .translate(
-        -centerX,
-        -centerY,
-      )
+    rotate(angle)
   }
 }
 
@@ -484,7 +496,7 @@ useDrag(onDrag, { domTarget: a4, eventOptions: { passive: false } })
     </div>
 
     <div class="absolute bottom-0 left-0 p-2 text-xs text-white bg-black/50">
-      {{ Math.abs(rotationInDeg) <= Number.EPSILON ? '0' : rotationInDeg.toFixed(2) }}°
+      {{ rotationInDeg === 0 ? '0' : rotationInDeg.toFixed(2) }}°
     </div>
 
     <div
@@ -557,7 +569,7 @@ useDrag(onDrag, { domTarget: a4, eventOptions: { passive: false } })
           <button
             type="button"
             class="pointer-events-auto flex items-center justify-center p-1.5 text-white transition-colors duration-300 ease-in-out rounded-lg cursor-pointer shrink-0 bg-black/50 size-8 hover:bg-black/80"
-            @click="resetRotation()"
+            @click="rotateExact(0)"
           >
             <Underline class="size-6" />
           </button>

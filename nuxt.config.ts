@@ -11,7 +11,21 @@ export default defineNuxtConfig({
     enabled: true,
   },
 
-  css: ['~/assets/css/main.css'],
+  app: {
+    rootAttrs: {
+      id: 'app',
+    },
+    head: {
+      title: 'Slick Viewer',
+      link: [
+        { rel: 'icon', href: '/icon.svg', type: 'image/svg+xml' },
+      ],
+    },
+  },
+
+  css: [
+    '~/assets/css/main.css',
+  ],
 
   compatibilityDate: '2025-05-15',
 
