@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { FullGestureState, StateKey } from '@vueuse/gesture'
-import { onKeyDown, useAsyncState } from '@vueuse/core'
+import { useAsyncState } from '@vueuse/core'
 import { useDrag } from '@vueuse/gesture'
 import { ChevronDown, ImageIcon, ImageOff, Maximize, RotateCcw, RotateCw, SquarePower, Underline, ZoomIn, ZoomOut } from 'lucide-vue-next'
 
@@ -74,9 +74,7 @@ function buttonMatch(event: MouseEvent, control: Control | undefined, defaults: 
   }
 }
 
-const CENTER_PADDING = computed(() => options.padding ?? 40)
-
-const containerRef = useTemplateRef('containerRef')
+const containerEl = useTemplateRef('containerRef')
 
 const { state, error, execute } = useAsyncState<HTMLImageElement | undefined>(
   () => new Promise((resolve, reject) => {
@@ -109,17 +107,20 @@ watch(
   { deep: true },
 )
 
+const context = useTransformMatrix(containerEl, () => ({
+  width: state.value?.naturalWidth ?? 0,
+  height: state.value?.naturalHeight ?? 0,
+}))
+
 const computedNaturalWidth = computed(() => state.value?.naturalWidth || 0)
 const computedNaturalHeight = computed(() => state.value?.naturalHeight || 0)
 
-const transformMatrix = shallowRef<DOMMatrix>(typeof DOMMatrix === 'undefined' ? undefined as unknown as DOMMatrix : new DOMMatrix())
-
 const rotationInDeg = computed(() => {
-  if (!transformMatrix.value) {
+  if (!context.transformMatrix.value) {
     return 0
   }
 
-  let angle = Math.atan2(transformMatrix.value.b, transformMatrix.value.a)
+  let angle = Math.atan2(context.transformMatrix.value.b, context.transformMatrix.value.a)
   angle = angle * (180 / Math.PI)
 
   // FIXME: the angle sometimes is very close to 0, but not exactly 0
@@ -127,195 +128,21 @@ const rotationInDeg = computed(() => {
   return Math.abs(angle) < 0.0001 ? 0 : angle
 })
 
-function getSize() {
-  const rect = containerRef.value?.getBoundingClientRect()
-  const i = state.value
-
-  if (!transformMatrix.value || !i || !rect || !i.naturalWidth || !i.naturalHeight) {
-    return null
-  }
-
-  return {
-    container: rect,
-    image: i,
-  }
-}
-
-function zoom(scaleFactor: number, pivot?: { x: number, y: number }) {
-  const size = getSize()
-
-  if (!size) {
-    return
-  }
-
-  if (scaleFactor < 1) {
-    const matrix = transformMatrix.value
-    const currentScale = Math.sqrt(matrix.a * matrix.a + matrix.b * matrix.b)
-
-    // Get the size of the image after scaling
-    const currentWidth = Math.abs(currentScale * size.image.naturalWidth)
-    const currentHeight = Math.abs(currentScale * size.image.naturalHeight)
-
-    // Prevent zooming out too much
-    if (Math.max(currentWidth, currentHeight) < 50) {
-      return
-    }
-  }
-
-  const x = pivot?.x ?? size.image.naturalWidth / 2
-  const y = pivot?.y ?? size.image.naturalHeight / 2
-
-  transformMatrix.value = transformMatrix.value
-    .translate(x, y)
-    .scale(scaleFactor)
-    .translate(-x, -y)
-}
-
-function zoomAtMousePoint(scaleFactor: number, event: MouseEvent) {
-  const size = getSize()
-
-  if (!size) {
-    return
-  }
-
-  const rect = size.container
-  const mouseX = event.clientX - rect.left
-  const mouseY = event.clientY - rect.top
-
-  const inv = transformMatrix.value.inverse()
-  const pointInImageCoords = inv.transformPoint(new DOMPoint(mouseX, mouseY))
-
-  zoom(scaleFactor, {
-    x: pointInImageCoords.x,
-    y: pointInImageCoords.y,
-  })
-}
-
-function rotate(deg: number, pivot?: { x: number, y: number }) {
-  const size = getSize()
-
-  if (!size) {
-    return
-  }
-
-  const x = pivot?.x ?? size.image.naturalWidth / 2
-  const y = pivot?.y ?? size.image.naturalHeight / 2
-
-  transformMatrix.value = transformMatrix.value
-    .translate(x, y)
-    .rotate(deg)
-    .translate(-x, -y)
-}
-
-function rotateAtMousePoint(deg: number, event: MouseEvent) {
-  const size = getSize()
-
-  if (!size) {
-    return
-  }
-
-  const inv = transformMatrix.value.inverse()
-  const rect = size.container
-  const mouseX = event.clientX - rect.left
-  const mouseY = event.clientY - rect.top
-
-  const pointInImageCoords = inv.transformPoint(new DOMPoint(mouseX, mouseY))
-
-  rotate(deg, {
-    x: pointInImageCoords.x,
-    y: pointInImageCoords.y,
-  })
-}
-
-function rotateExact(deg: number) {
-  const size = getSize()
-
-  if (!size) {
-    return
-  }
-
-  transformMatrix.value = transformMatrix.value
-    .translate(size.image.naturalWidth / 2, size.image.naturalHeight / 2)
-    // FIXME: subtract the current rotation works, but we may hit float point precision issues thus the rotation is set to -0.00000000001
-    .rotate(-Math.atan2(transformMatrix.value.b, transformMatrix.value.a) * (180 / Math.PI))
-    .rotate(deg)
-    .translate(-size.image.naturalWidth / 2, -size.image.naturalHeight / 2)
-}
-
-function centerImage() {
-  const size = getSize()
-
-  if (!size) {
-    return
-  }
-
-  const scale = Math.min(
-    (size.container.width - CENTER_PADDING.value) / size.image.naturalWidth,
-    (size.container.height - CENTER_PADDING.value) / size.image.naturalHeight,
-  )
-
-  transformMatrix.value = new DOMMatrix()
-    .translate(size.container.width / 2, size.container.height / 2)
-    .scale(scale)
-    .translate(-size.image.naturalWidth / 2, -size.image.naturalHeight / 2)
-}
-
-/**
- * Pad in screen coordinates.
- * Useful to drag the image around with the mouse.
- */
-function pad(x: number, y: number) {
-  const size = getSize()
-
-  if (!size) {
-    return
-  }
-
-  const inv = transformMatrix.value.inverse()
-  const origin = inv.transformPoint(new DOMPoint(0, 0))
-  const moved = inv.transformPoint(new DOMPoint(x, y))
-
-  const localDeltaX = moved.x - origin.x
-  const localDeltaY = moved.y - origin.y
-
-  transformMatrix.value = transformMatrix.value.translate(localDeltaX, localDeltaY)
-}
-
-// FIXME: the selection is wrong, we need to take the image offset into account
-function select(area: { x: number, y: number, w: number, h: number }) {
-  const size = getSize()
-
-  if (!size) {
-    return
-  }
-
-  const m = new DOMMatrix(transformMatrix.value as any)
-
-  const scale = Math.min(size.container.width / area.w, size.container.height / area.h)
-  m.scaleSelf(scale, scale)
-
-  m.translateSelf(-area.x, -area.y)
-
-  transformMatrix.value = m
-}
-
-const context = {
-  zoom,
-  zoomAtMousePoint,
-  rotate,
-  rotateAtMousePoint,
-  rotateExact,
-  centerImage,
-  pad,
-  select,
-}
-
 // state is never updated in SSR
 watch(
   state,
-  () => centerImage(),
+  () => context.centerImage(options.padding ?? 40),
   { immediate: true },
 )
+
+const pointer = ref({
+  pointerId: undefined as number | undefined,
+  down: false as 'pan' | 'area' | false,
+  startX: 0,
+  startY: 0,
+  x: 0,
+  y: 0,
+})
 
 /**
  * Keyboard Shortcuts
@@ -332,12 +159,20 @@ watch(
  */
 
 const shortcuts: Record<string, () => void> = {
-  ' ': centerImage,
-  'Escape': () => rotateExact(0),
-  'ArrowLeft': () => rotate(-10),
-  'ArrowRight': () => rotate(10),
-  '+': () => zoom(1.1),
-  '-': () => zoom(0.9),
+  ' ': () => context.centerImage(options.padding ?? 40),
+  'Escape': () => {
+    // Cancel the current pointer action if any
+    if (pointer.value.down) {
+      pointer.value.down = false
+    }
+    else {
+      context.rotateExact(0)
+    }
+  },
+  'ArrowLeft': () => context.rotate(-10),
+  'ArrowRight': () => context.rotate(10),
+  '+': () => context.zoom(1.1),
+  '-': () => context.zoom(0.9),
 }
 
 useEventListener(
@@ -360,15 +195,6 @@ useEventListener(
 
 let suppressContextMenu = false
 
-const pointer = ref({
-  pointerId: undefined as number | undefined,
-  down: false as 'pan' | 'area' | false,
-  startX: 0,
-  startY: 0,
-  x: 0,
-  y: 0,
-})
-
 const MIN_AREA = 12
 
 const area = computed(() => {
@@ -389,7 +215,7 @@ const area = computed(() => {
   return null
 })
 
-useEventListener(containerRef, 'pointerdown', (event) => {
+useEventListener(containerEl, 'pointerdown', (event) => {
   if (event.shiftKey || event.ctrlKey) {
     return
   }
@@ -431,7 +257,7 @@ useEventListener('pointermove', (event) => {
   pointer.value.y = event.clientY
 
   if (pointer.value.down === 'pan') {
-    pad(deltaX, deltaY)
+    context.pad(deltaX, deltaY)
   }
 
   const movementX = pointer.value.startX - pointer.value.x
@@ -448,7 +274,7 @@ useEventListener(['pointerup', 'pointercancel'], (event) => {
   }
 
   if (area.value) {
-    select(area.value)
+    context.select(area.value)
   }
 
   pointer.value.pointerId = undefined
@@ -457,7 +283,7 @@ useEventListener(['pointerup', 'pointercancel'], (event) => {
   passive: true,
 })
 
-useEventListener(containerRef, 'contextmenu', (event) => {
+useEventListener(containerEl, 'contextmenu', (event) => {
   if (event.shiftKey) {
     return
   }
@@ -473,7 +299,7 @@ useEventListener(containerRef, 'contextmenu', (event) => {
   passive: false,
 })
 
-useEventListener(containerRef, 'wheel', (event) => {
+useEventListener(containerEl, 'wheel', (event) => {
   // if (event.ctrlKey) {
   //   return
   // }
@@ -485,23 +311,23 @@ useEventListener(containerRef, 'wheel', (event) => {
   // Rotate instead of zooming under the cursor
   if (event.shiftKey) {
     const angle = Math.sign(event.deltaY) * 15 // Rotate 15 degrees per scroll step
-    rotateAtMousePoint(angle, event)
+    context.rotateAtMousePoint(angle, event)
   }
   else {
-    zoomAtMousePoint(event.deltaY < 0 ? 1.1 : 0.9, event)
+    context.zoomAtMousePoint(event.deltaY < 0 ? 1.1 : 0.9, event)
   }
 })
 
 // Fix for some wired glitch when the image overflows the container in rare occasions on first load
-const { stop } = useResizeObserver(containerRef, () => {
-  centerImage()
+const { stop } = useResizeObserver(containerEl, () => {
+  context.centerImage(options.padding ?? 40)
   stop()
 })
 
 //
 
-const menuContainerRef = useTemplateRef('menuContainerRef')
-const isHovered = useElementHover(menuContainerRef, { delayEnter: 200, delayLeave: 600 })
+const menuContainerEl = useTemplateRef('menuContainerRef')
+const isHovered = useElementHover(menuContainerEl, { delayEnter: 200, delayLeave: 600 })
 
 const settings = ref({
   showInfo: true,
@@ -520,19 +346,17 @@ function onDrag(e: Omit<FullGestureState<StateKey<'drag'>>, 'event'> & { event: 
 
     const angle = (x + y) * (Math.PI / 180)
 
-    rotate(angle)
+    context.rotate(angle)
   }
 }
 
-const a1 = useTemplateRef('a1')
-// const a2 = useTemplateRef('a2')
-const a3 = useTemplateRef('a3')
-const a4 = useTemplateRef('a4')
+const a1El = useTemplateRef('a1')
+const a3El = useTemplateRef('a3')
+const a4El = useTemplateRef('a4')
 
-useDrag(onDrag, { domTarget: a1, eventOptions: { passive: false } })
-// useDrag(onDrag, { domTarget: a2, eventOptions: { passive: false } })
-useDrag(onDrag, { domTarget: a3, eventOptions: { passive: false } })
-useDrag(onDrag, { domTarget: a4, eventOptions: { passive: false } })
+useDrag(onDrag, { domTarget: a1El, eventOptions: { passive: false } })
+useDrag(onDrag, { domTarget: a3El, eventOptions: { passive: false } })
+useDrag(onDrag, { domTarget: a4El, eventOptions: { passive: false } })
 </script>
 
 <template>
@@ -557,7 +381,7 @@ useDrag(onDrag, { domTarget: a4, eventOptions: { passive: false } })
         'min-height': `${computedNaturalHeight}px`,
         'max-width': `${computedNaturalWidth}px`,
         'max-height': `${computedNaturalHeight}px`,
-        'transform': String(transformMatrix || 'matrix(1, 0, 0, 1, 0, 0)'),
+        'transform': context.transform.value,
       }"
     >
 
@@ -607,7 +431,7 @@ useDrag(onDrag, { domTarget: a4, eventOptions: { passive: false } })
           <button
             type="button"
             class="pointer-events-auto flex items-center justify-center p-1.5 text-white transition-colors duration-300 ease-in-out rounded-lg cursor-pointer shrink-0 bg-black/50 size-8 hover:bg-black/80"
-            @click="zoom(1.1)"
+            @click="context.zoom(1.1)"
           >
             <ZoomIn class="size-6" />
           </button>
@@ -615,7 +439,7 @@ useDrag(onDrag, { domTarget: a4, eventOptions: { passive: false } })
           <button
             type="button"
             class="pointer-events-auto flex items-center justify-center p-1.5 text-white transition-colors duration-300 ease-in-out rounded-lg cursor-pointer shrink-0 bg-black/50 size-8 hover:bg-black/80"
-            @click="zoom(0.9)"
+            @click="context.zoom(0.9)"
           >
             <ZoomOut class="size-6" />
           </button>
@@ -623,7 +447,7 @@ useDrag(onDrag, { domTarget: a4, eventOptions: { passive: false } })
           <button
             type="button"
             class="pointer-events-auto flex items-center justify-center p-1.5 text-white transition-colors duration-300 ease-in-out rounded-lg cursor-pointer shrink-0 bg-black/50 size-8 hover:bg-black/80"
-            @click="rotate(-10)"
+            @click="context.rotate(-10)"
           >
             <RotateCcw class="size-6" />
           </button>
@@ -631,7 +455,7 @@ useDrag(onDrag, { domTarget: a4, eventOptions: { passive: false } })
           <button
             type="button"
             class="pointer-events-auto flex items-center justify-center p-1.5 text-white transition-colors duration-300 ease-in-out rounded-lg cursor-pointer shrink-0 bg-black/50 size-8 hover:bg-black/80"
-            @click="rotate(10)"
+            @click="context.rotate(10)"
           >
             <RotateCw class="size-6" />
           </button>
@@ -639,7 +463,7 @@ useDrag(onDrag, { domTarget: a4, eventOptions: { passive: false } })
           <button
             type="button"
             class="pointer-events-auto flex items-center justify-center p-1.5 text-white transition-colors duration-300 ease-in-out rounded-lg cursor-pointer shrink-0 bg-black/50 size-8 hover:bg-black/80"
-            @click="rotateExact(0)"
+            @click="context.rotateExact(0)"
           >
             <Underline class="size-6" />
           </button>
@@ -647,7 +471,7 @@ useDrag(onDrag, { domTarget: a4, eventOptions: { passive: false } })
           <button
             type="button"
             class="flex items-center justify-center p-1.5 text-white transition-colors duration-300 ease-in-out rounded-lg cursor-pointer shrink-0 bg-black/50 size-8 hover:bg-black/80"
-            @click="centerImage()"
+            @click="context.centerImage(options.padding ?? 40)"
           >
             <Maximize class="size-6" />
           </button>

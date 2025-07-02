@@ -1,23 +1,32 @@
 import type { MaybeRefOrGetter } from '@vueuse/core'
 import { shallowRef, toValue } from 'vue'
 
-export function useImageViewerContext(
-  target: MaybeRefOrGetter<HTMLImageElement | null | undefined>,
+interface UseImageViewerContextOptions {
+  width?: number
+  height?: number
+}
+
+export function useTransformMatrix(
+  target: MaybeRefOrGetter<Element | null | undefined>,
+  options: MaybeRefOrGetter<UseImageViewerContextOptions | null | undefined>,
 ) {
   const transformMatrix = shallowRef<DOMMatrix>(typeof DOMMatrix === 'undefined' ? undefined as unknown as DOMMatrix : new DOMMatrix())
 
   function getSize() {
     const rect = toValue(target)?.getBoundingClientRect()
 
-    const i = null as unknown as HTMLImageElement | null
+    const i = toValue(options)
 
-    if (!transformMatrix.value || !i || !rect || !i.naturalWidth || !i.naturalHeight) {
+    if (!transformMatrix.value || !i || !rect || !i.width || !i.height) {
       return null
     }
 
     return {
       container: rect,
-      image: i,
+      image: {
+        width: i.width,
+        height: i.height,
+      },
     }
   }
 
@@ -33,8 +42,8 @@ export function useImageViewerContext(
       const currentScale = Math.sqrt(matrix.a * matrix.a + matrix.b * matrix.b)
 
       // Get the size of the image after scaling
-      const currentWidth = Math.abs(currentScale * size.image.naturalWidth)
-      const currentHeight = Math.abs(currentScale * size.image.naturalHeight)
+      const currentWidth = Math.abs(currentScale * size.image.width)
+      const currentHeight = Math.abs(currentScale * size.image.height)
 
       // Prevent zooming out too much
       if (Math.max(currentWidth, currentHeight) < 50) {
@@ -42,8 +51,8 @@ export function useImageViewerContext(
       }
     }
 
-    const x = pivot?.x ?? size.image.naturalWidth / 2
-    const y = pivot?.y ?? size.image.naturalHeight / 2
+    const x = pivot?.x ?? size.image.width / 2
+    const y = pivot?.y ?? size.image.height / 2
 
     transformMatrix.value = transformMatrix.value
       .translate(x, y)
@@ -78,8 +87,8 @@ export function useImageViewerContext(
       return
     }
 
-    const x = pivot?.x ?? size.image.naturalWidth / 2
-    const y = pivot?.y ?? size.image.naturalHeight / 2
+    const x = pivot?.x ?? size.image.width / 2
+    const y = pivot?.y ?? size.image.height / 2
 
     transformMatrix.value = transformMatrix.value
       .translate(x, y)
@@ -115,11 +124,11 @@ export function useImageViewerContext(
     }
 
     transformMatrix.value = transformMatrix.value
-      .translate(size.image.naturalWidth / 2, size.image.naturalHeight / 2)
-    // FIXME: subtract the current rotation works, but we may hit float point precision issues thus the rotation is set to -0.00000000001
+      .translate(size.image.width / 2, size.image.height / 2)
+      // FIXME: subtract the current rotation works, but we may hit float point precision issues thus the rotation is set to -0.00000000001
       .rotate(-Math.atan2(transformMatrix.value.b, transformMatrix.value.a) * (180 / Math.PI))
       .rotate(deg)
-      .translate(-size.image.naturalWidth / 2, -size.image.naturalHeight / 2)
+      .translate(-size.image.width / 2, -size.image.height / 2)
   }
 
   function centerImage(padding: number = 40) {
@@ -130,14 +139,14 @@ export function useImageViewerContext(
     }
 
     const scale = Math.min(
-      (size.container.width - padding) / size.image.naturalWidth,
-      (size.container.height - padding) / size.image.naturalHeight,
+      (size.container.width - padding) / size.image.width,
+      (size.container.height - padding) / size.image.height,
     )
 
     transformMatrix.value = new DOMMatrix()
       .translate(size.container.width / 2, size.container.height / 2)
       .scale(scale)
-      .translate(-size.image.naturalWidth / 2, -size.image.naturalHeight / 2)
+      .translate(-size.image.width / 2, -size.image.height / 2)
   }
 
   /**
@@ -188,6 +197,8 @@ export function useImageViewerContext(
     centerImage,
     pad,
     select,
+    transform: computed(() => String(transformMatrix.value || 'matrix(1, 0, 0, 1, 0, 0)')),
+    transformMatrix,
   }
 
   return context
