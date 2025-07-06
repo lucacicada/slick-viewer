@@ -1,7 +1,4 @@
 <script setup lang="ts">
-import type { FullGestureState, StateKey } from '@vueuse/gesture'
-import { useAsyncState } from '@vueuse/core'
-import { useDrag } from '@vueuse/gesture'
 import { ChevronDown, ImageIcon, ImageOff, Maximize, RotateCcw, RotateCw, SquarePower, Underline, ZoomIn, ZoomOut } from 'lucide-vue-next'
 
 type MouseButton = 'left' | 'middle' | 'right'
@@ -14,8 +11,27 @@ type JoinModifiers<T extends string[], Acc extends string = ''>
 // Accept MouseButton followed by 0 or more modifiers joined by '+'
 type ActionButton = `${MouseButton}${'' | `+${JoinModifiers<Modifier[]>}`}`
 
+interface Ctx {
+  rotate: (angle: number) => void
+  rotateExact: (angle: number) => void
+  rotateAtMousePoint: (angle: number, event: MouseEvent | WheelEvent) => void
+  zoom: (factor: number) => void
+  zoomAtMousePoint: (factor: number, event: MouseEvent | WheelEvent) => void
+  centerImage: (padding?: number) => void
+}
+
+/**
+ * For convenience, `preventDefault()` is automatically called on the event after the callback is invoked.
+ *
+ * To control this behavior, return `false` from the callback, this will leave the `event` untouched.
+ */
+interface ShortcutHandler {
+  (ctx: Ctx, event: KeyboardEvent | WheelEvent): void | boolean
+}
+
 export interface ImageViewerOptions {
   src?: string
+  type?: string
   alwaysSuppressContextMenu?: boolean
   padding?: number
   controls?: {
@@ -32,6 +48,9 @@ export interface ImageViewerOptions {
       button?: ActionButton | ActionButton[]
       margin?: number
     }
+  }
+  shortcuts?: ShortcutHandler | {
+    [K in string]: (ctx: Ctx, event: KeyboardEvent | WheelEvent) => void | boolean
   }
 }
 
@@ -74,46 +93,61 @@ function buttonMatch(event: MouseEvent, control: Control | undefined, defaults: 
   }
 }
 
+const mediaEl = useTemplateRef('mediaRef')
+
+const width = ref(0)
+const height = ref(0)
+function computeDimensions(el: EventTarget | null | undefined) {
+  if (typeof HTMLImageElement !== 'undefined' && el instanceof HTMLImageElement) {
+    width.value = el.naturalWidth
+    height.value = el.naturalHeight
+  }
+  else if (typeof HTMLVideoElement !== 'undefined' && el instanceof HTMLVideoElement) {
+    width.value = el.videoWidth
+    height.value = el.videoHeight
+  }
+  else {
+    width.value = 0
+    height.value = 0
+  }
+}
+
+watch(mediaEl, (el) => {
+  computeDimensions(el)
+
+  // Special case, there is no `decoded` event for images,
+  // so we need to decode the image manually.
+  if (typeof HTMLImageElement !== 'undefined' && el instanceof HTMLImageElement) {
+    el.decode().then(() => computeDimensions(el))
+  }
+}, {
+  immediate: true,
+})
+
+useEventListener(mediaEl, 'load', (e) => {
+  computeDimensions(e.target)
+}, {
+  passive: true,
+})
+
+useEventListener(mediaEl, 'loadedmetadata', (e) => {
+  computeDimensions(e.target)
+}, {
+  passive: true,
+})
+
 const containerEl = useTemplateRef('containerRef')
 
-const { state, error, execute } = useAsyncState<HTMLImageElement | undefined>(
-  () => new Promise((resolve, reject) => {
-    const optionsValue = toValue(src) as string | { src: string } | undefined
-
-    if (!optionsValue) {
-      resolve(undefined)
-      return
-    }
-
-    const img = new Image()
-    img.src = typeof optionsValue === 'string' ? optionsValue : optionsValue.src
-
-    // Decode might run earlier than onload
-    img.decode().then(() => resolve(img)).catch(reject)
-
-    // onload can sometimes run before decode
-    img.onload = () => resolve(img)
-    img.onerror = reject
-  }),
-  undefined,
-  {
-    resetOnExecute: true,
-  },
-)
-
-watch(
-  () => toValue(src),
-  () => execute(),
-  { deep: true },
-)
-
 const context = useTransformMatrix(containerEl, () => ({
-  width: state.value?.naturalWidth ?? 0,
-  height: state.value?.naturalHeight ?? 0,
+  width: width.value,
+  height: height.value,
 }))
 
-const computedNaturalWidth = computed(() => state.value?.naturalWidth || 0)
-const computedNaturalHeight = computed(() => state.value?.naturalHeight || 0)
+watch([width, height], () => {
+  context.centerImage()
+}, {
+  immediate: true,
+})
 
 const rotationInDeg = computed(() => {
   if (!context.transformMatrix.value) {
@@ -128,70 +162,75 @@ const rotationInDeg = computed(() => {
   return Math.abs(angle) < 0.0001 ? 0 : angle
 })
 
-// state is never updated in SSR
-watch(
-  state,
-  () => context.centerImage(options.padding ?? 40),
-  { immediate: true },
-)
+const ctx: Ctx = {
+  rotate: context.rotate,
+  rotateExact: context.rotateExact,
+  rotateAtMousePoint: context.rotateAtMousePoint,
+  zoom: context.zoom,
+  zoomAtMousePoint: context.zoomAtMousePoint,
+  centerImage: (padding?: number) => context.centerImage(padding ?? options?.padding ?? 40),
+}
 
 const pointer = ref({
   pointerId: undefined as number | undefined,
-  down: false as 'pan' | 'area' | false,
+  down: false as 'pan' | 'area' | 'drag-rotate' | false,
   startX: 0,
   startY: 0,
   x: 0,
   y: 0,
 })
 
-/**
- * Keyboard Shortcuts
- * - Space: Center the image
- * - Escape: Reset the image to its initial position
- * - ArrowLeft: Rotate left
- * - ArrowRight: Rotate right
- * - +: Zoom in
- * - -: Zoom out
- * - R: Reset rotation preserving zoom and position
- * - C: Center the image preserving zoom
- * - T: Toggle theater mode
- * - I: Toggle image info
- */
+// If the shortcut function is called, prevent default on undefined or false return value
+function invokeShortcut(event: KeyboardEvent | WheelEvent) {
+  const shortcuts = options?.shortcuts
 
-const shortcuts: Record<string, () => void> = {
-  ' ': () => context.centerImage(options.padding ?? 40),
-  'Escape': () => {
-    // Cancel the current pointer action if any
-    if (pointer.value.down) {
-      pointer.value.down = false
-    }
-    else {
-      context.rotateExact(0)
-    }
-  },
-  'ArrowLeft': () => context.rotate(-10),
-  'ArrowRight': () => context.rotate(10),
-  '+': () => context.zoom(1.1),
-  '-': () => context.zoom(0.9),
+  if (!shortcuts) {
+    return
+  }
+
+  let res: any
+  let called = false
+
+  if (typeof shortcuts === 'function') {
+    res = shortcuts(ctx, event)
+    called = true
+  }
+  else if (event.type === 'wheel' && typeof shortcuts.Wheel === 'function') {
+    res = shortcuts.Wheel(ctx, event)
+    called = true
+  }
+  else if ('key' in event && typeof shortcuts[event.key] === 'function') {
+    res = shortcuts[event.key](ctx, event)
+    called = true
+  }
+
+  if (called && res !== false) {
+    event.preventDefault()
+    event.stopPropagation()
+    event.stopImmediatePropagation()
+  }
 }
 
-useEventListener(
-  'keydown',
-  (event: KeyboardEvent) => {
-    if (event.repeat) {
-      return
-    }
+useEventListener('keydown', (event: KeyboardEvent) => {
+  if (event.repeat) {
+    return
+  }
 
-    if (event.key in shortcuts) {
-      event.preventDefault()
-      event.stopPropagation()
-      event.stopImmediatePropagation()
+  // Cancel the current pointer action if any
+  if (event.key === 'Escape' && pointer.value.down) {
+    event.preventDefault()
+    event.stopPropagation()
+    event.stopImmediatePropagation()
+    pointer.value.down = false
+    return
+  }
 
-      shortcuts[event.key]()
-    }
-  },
-  false,
-)
+  invokeShortcut(event)
+})
+
+useEventListener(containerEl, 'wheel', (event) => {
+  invokeShortcut(event)
+})
 
 let suppressContextMenu = false
 
@@ -218,6 +257,36 @@ const area = computed(() => {
 useEventListener(containerEl, 'pointerdown', (event) => {
   if (event.shiftKey || event.ctrlKey) {
     return
+  }
+
+  const rect = containerEl.value?.getBoundingClientRect()
+
+  if (!rect) {
+    return
+  }
+
+  // Check if the cursor is near the margin
+  const m = controls?.dragRotate?.margin ?? 60
+  if ((controls?.dragRotate?.enabled ?? true) && m > 0) {
+    const mouseX = event.clientX - rect.left
+    const mouseY = event.clientY - rect.top
+
+    if ((mouseX < m || mouseX > rect.width - m || mouseY < m || mouseY > rect.height - m)) {
+      event.preventDefault()
+      event.stopPropagation()
+      event.stopImmediatePropagation()
+
+      pointer.value = {
+        pointerId: event.pointerId,
+        down: 'drag-rotate',
+        startX: event.clientX,
+        startY: event.clientY,
+        x: event.clientX,
+        y: event.clientY,
+      }
+
+      return
+    }
   }
 
   let action: 'pan' | 'area'
@@ -259,6 +328,24 @@ useEventListener('pointermove', (event) => {
   if (pointer.value.down === 'pan') {
     context.pad(deltaX, deltaY)
   }
+  else if (pointer.value.down === 'drag-rotate') {
+    const ROTATE_POINTER_SENSITIVITY = 1 / 100
+
+    let rx = deltaX * ROTATE_POINTER_SENSITIVITY
+    let ry = deltaY * ROTATE_POINTER_SENSITIVITY
+
+    const rect = containerEl.value?.getBoundingClientRect()
+    if (rect) {
+      // position aware rotation
+      if (pointer.value.y > rect.height / 2)
+        rx *= -1
+
+      if (pointer.value.x < rect.width / 2)
+        ry *= -1
+
+      context.rotate(rx + ry)
+    }
+  }
 
   const movementX = pointer.value.startX - pointer.value.x
   const movementY = pointer.value.startY - pointer.value.y
@@ -299,25 +386,6 @@ useEventListener(containerEl, 'contextmenu', (event) => {
   passive: false,
 })
 
-useEventListener(containerEl, 'wheel', (event) => {
-  // if (event.ctrlKey) {
-  //   return
-  // }
-
-  event.preventDefault()
-  event.stopPropagation()
-  event.stopImmediatePropagation()
-
-  // Rotate instead of zooming under the cursor
-  if (event.shiftKey) {
-    const angle = Math.sign(event.deltaY) * 15 // Rotate 15 degrees per scroll step
-    context.rotateAtMousePoint(angle, event)
-  }
-  else {
-    context.zoomAtMousePoint(event.deltaY < 0 ? 1.1 : 0.9, event)
-  }
-})
-
 // Fix for some wired glitch when the image overflows the container in rare occasions on first load
 const { stop } = useResizeObserver(containerEl, () => {
   context.centerImage(options.padding ?? 40)
@@ -334,43 +402,46 @@ const settings = ref({
   bgColor: '#000000',
   theaterMode: true,
 })
-
-function onDrag(e: Omit<FullGestureState<StateKey<'drag'>>, 'event'> & { event: Event }) {
-  if (e.dragging) {
-    e.event.preventDefault()
-    e.event.stopPropagation()
-    e.event.stopImmediatePropagation()
-
-    const x = e.delta[0]
-    const y = e.delta[1]
-
-    const angle = (x + y) * (Math.PI / 180)
-
-    context.rotate(angle)
-  }
-}
-
-const a1El = useTemplateRef('a1')
-const a3El = useTemplateRef('a3')
-const a4El = useTemplateRef('a4')
-
-useDrag(onDrag, { domTarget: a1El, eventOptions: { passive: false } })
-useDrag(onDrag, { domTarget: a3El, eventOptions: { passive: false } })
-useDrag(onDrag, { domTarget: a4El, eventOptions: { passive: false } })
 </script>
 
 <template>
   <div
     ref="containerRef"
+    role="presentation"
     class="bg-black size-full relative overflow-hidden bg-center bg-cover before:bg-[#0000009e] before:absolute before:inset-[0] before:backdrop-blur-2xl select-none"
     :style="settings.theaterMode ? { backgroundImage: `url(${src})` } : {}"
   >
-    <div ref="a1" class="cursor-move absolute z-10 h-[60px] inset-x-0 top-0" />
-    <div ref="a4" class="cursor-move absolute z-10 h-[60px] inset-x-0 bottom-0" />
-    <div ref="a3" class="cursor-move absolute z-10 w-[60px] inset-y-0 right-0" />
+    <div class="cursor-move absolute z-10 h-[60px] inset-x-0 top-0" />
+    <div class="cursor-move absolute z-10 h-[60px] inset-x-0 bottom-0" />
+    <div class="cursor-move absolute z-10 w-[60px] inset-y-0 right-0" />
 
+    <video
+      v-if="type?.startsWith('video/')"
+      ref="mediaRef"
+      :key="`video-${src}`"
+      class="absolute top-0 left-0 block p-0 m-0 origin-top-left will-change-transform max-w-[fit-content] max-h-[fit-content]"
+      :width="width"
+      :height="height"
+      :src="src"
+      :style="{
+        transform: context.transform.value,
+      }"
+    />
     <img
-      class="absolute top-0 left-0 block origin-top-left will-change-transform p-0 m-0"
+      v-else
+      ref="mediaRef"
+      :key="`image-${src}`"
+      class="absolute top-0 left-0 block p-0 m-0 origin-top-left will-change-transform max-w-[fit-content] max-h-[fit-content]"
+      :width="width"
+      :height="height"
+      :src="src"
+      :style="{
+        transform: context.transform.value,
+      }"
+    >
+
+    <!-- <img
+      class="absolute top-0 left-0 block p-0 m-0 origin-top-left will-change-transform"
       :src="src"
       :width="computedNaturalWidth"
       :height="computedNaturalHeight"
@@ -383,11 +454,7 @@ useDrag(onDrag, { domTarget: a4El, eventOptions: { passive: false } })
         'max-height': `${computedNaturalHeight}px`,
         'transform': context.transform.value,
       }"
-    >
-
-    <div v-if="error" class="relative z-10 text-white bg-black/50">
-      Unable to load the image
-    </div>
+    > -->
 
     <div class="absolute bottom-0 left-0 p-2 text-xs text-white bg-black/50">
       {{ rotationInDeg === 0 ? '0' : rotationInDeg.toFixed(2) }}°

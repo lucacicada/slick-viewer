@@ -60,7 +60,7 @@ export function useTransformMatrix(
       .translate(-x, -y)
   }
 
-  function zoomAtMousePoint(scaleFactor: number, event: MouseEvent) {
+  function zoomAtMousePoint(scaleFactor: number, event: MouseEvent | WheelEvent) {
     const size = getSize()
 
     if (!size) {
@@ -96,7 +96,7 @@ export function useTransformMatrix(
       .translate(-x, -y)
   }
 
-  function rotateAtMousePoint(deg: number, event: MouseEvent) {
+  function rotateAtMousePoint(deg: number, event: MouseEvent | WheelEvent) {
     const size = getSize()
 
     if (!size) {
