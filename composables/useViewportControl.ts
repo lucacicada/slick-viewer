@@ -1,12 +1,14 @@
-import { useResizeObserver } from '@vueuse/core'
-import { computed, shallowRef, watch } from 'vue'
+import { unrefElement, useElementBounding, useEventListener, useResizeObserver } from '@vueuse/core'
+import { computed, ref, shallowRef, watch } from 'vue'
 
 interface UseViewportControlOptions {
   padding?: number
 }
 
+const DRAG_MARGIN = 60
+
 export function useViewportControl(
-  target: MaybeRefOrGetter<HTMLElement | null | undefined>,
+  container: MaybeRefOrGetter<HTMLElement | null | undefined>,
   content: MaybeRefOrGetter<HTMLImageElement | HTMLMediaElement | null | undefined>,
   options?: MaybeRefOrGetter<UseViewportControlOptions>,
 ) {
@@ -15,28 +17,32 @@ export function useViewportControl(
 
   const area = shallowRef<{ x: number, y: number, w: number, h: number } | null>(null)
 
-  const targetRect = useElementBounding(target)
+  const containerBounding = useElementBounding(container)
 
-  const _ContentWidth = ref(0)
-  const _ContentHeight = ref(0)
+  const contentWidth = ref(0)
+  const contentHeight = ref(0)
 
   let suppressContextMenu = false
 
   // #region Determine the size of the image or video content.
 
   function computeDimensions(el: EventTarget | null | undefined) {
-    if (typeof HTMLImageElement !== 'undefined' && el instanceof HTMLImageElement) {
-      _ContentWidth.value = el.naturalWidth
-      _ContentHeight.value = el.naturalHeight
+    if (el) {
+      if (el instanceof HTMLImageElement) {
+        contentWidth.value = el.naturalWidth
+        contentHeight.value = el.naturalHeight
+        return
+      }
+
+      if (el instanceof HTMLVideoElement) {
+        contentWidth.value = el.videoWidth
+        contentHeight.value = el.videoHeight
+        return
+      }
     }
-    else if (typeof HTMLVideoElement !== 'undefined' && el instanceof HTMLVideoElement) {
-      _ContentWidth.value = el.videoWidth
-      _ContentHeight.value = el.videoHeight
-    }
-    else {
-      _ContentWidth.value = 0
-      _ContentHeight.value = 0
-    }
+
+    contentWidth.value = 0
+    contentHeight.value = 0
   }
 
   watch(() => unrefElement(content), (el) => {
@@ -51,13 +57,7 @@ export function useViewportControl(
     immediate: true,
   })
 
-  useEventListener(content, 'load', (e) => {
-    computeDimensions(e.target)
-  }, {
-    passive: true,
-  })
-
-  useEventListener(content, 'loadedmetadata', (e) => {
+  useEventListener(content, ['load', 'loadedmetadata'], (e) => {
     computeDimensions(e.target)
   }, {
     passive: true,
@@ -70,30 +70,25 @@ export function useViewportControl(
   function getContextData() {
     const matrix = transformMatrix.value
 
-    const rect = toValue(target)?.getBoundingClientRect()
-    const containerTop = rect?.top ?? 0
-    const containerLeft = rect?.left ?? 0
-    const containerWidth = rect?.width ?? 0
-    const containerHeight = rect?.height ?? 0
-
-    const contentWidth = _ContentWidth.value ?? 0
-    const contentHeight = _ContentHeight.value ?? 0
-
-    if (!matrix || !containerWidth || !containerHeight || !contentWidth || !contentHeight) {
+    if (!matrix || containerBounding.width.value === 0 || containerBounding.height.value === 0 || contentWidth.value === 0 || contentHeight.value === 0) {
       return null
     }
 
     return {
       matrix,
       container: {
-        top: containerTop,
-        left: containerLeft,
-        width: containerWidth,
-        height: containerHeight,
+        top: containerBounding.top.value,
+        left: containerBounding.left.value,
+        bottom: containerBounding.bottom.value,
+        right: containerBounding.right.value,
+        width: containerBounding.width.value,
+        height: containerBounding.height.value,
+        x: containerBounding.x.value,
+        y: containerBounding.y.value,
       },
       content: {
-        width: contentWidth,
-        height: contentHeight,
+        width: contentWidth.value,
+        height: contentHeight.value,
       },
     }
   }
@@ -247,12 +242,21 @@ export function useViewportControl(
       return
     }
 
-    const m = new DOMMatrix(transformMatrix.value as any)
+    const centerAreaPointX = area.x + area.w / 2
+    const centerAreaPointY = area.y + area.h / 2
 
-    const scale = Math.min(ctx.container.width / area.w, ctx.container.height / area.h)
-    m.scaleSelf(scale, scale)
+    const inv = ctx.matrix.inverse()
 
-    m.translateSelf(-area.x, -area.y)
+    // Center the image
+    const centerPoint = inv.transformPoint(new DOMPoint(centerAreaPointX, centerAreaPointY))
+    const m = new DOMMatrix()
+      .translate(ctx.container.width / 2, ctx.container.height / 2)
+      .translate(-centerPoint.x, -centerPoint.y)
+
+    transformMatrix.value = m
+      .translate(area.x, area.y)
+      .scale(ctx.container.width / area.w, ctx.container.height / area.h)
+      .translate(-area.x, -area.y)
 
     transformMatrix.value = m
   }
@@ -273,14 +277,13 @@ export function useViewportControl(
   })
 
   function mouseInOuterBounds(event: MouseEvent) {
-    const m = 60
-    const x = event.clientX - targetRect.left.value
-    const y = event.clientY - targetRect.top.value
+    const x = event.clientX - containerBounding.left.value
+    const y = event.clientY - containerBounding.top.value
 
-    return x >= m && x <= targetRect.width.value - m && y >= m && y <= targetRect.height.value - m
+    return x >= DRAG_MARGIN && x <= containerBounding.width.value - DRAG_MARGIN && y >= DRAG_MARGIN && y <= containerBounding.height.value - DRAG_MARGIN
   }
 
-  usePointerAction(target, {
+  usePointerAction(container, {
     pan: {
       down: ({ event }) => {
         if (event.shiftKey || event.ctrlKey) {
@@ -316,11 +319,11 @@ export function useViewportControl(
         let ry = delta.y * ROTATE_POINTER_SENSITIVITY
 
         // position aware rotation
-        if (event.clientY > targetRect.height.value) {
+        if (event.clientY > containerBounding.height.value) {
           rx *= -1
         }
 
-        if (event.clientX < targetRect.width.value) {
+        if (event.clientX < containerBounding.width.value) {
           ry *= -1
         }
 
@@ -338,8 +341,8 @@ export function useViewportControl(
         }
       },
       move: (event) => {
-        const top = event.startY - targetRect.top.value
-        const left = event.startX - targetRect.left.value
+        const top = event.startY - containerBounding.top.value
+        const left = event.startX - containerBounding.left.value
         const width = event.x - event.startX
         const height = event.y - event.startY
 
@@ -369,7 +372,7 @@ export function useViewportControl(
     },
   })
 
-  useEventListener(target, 'wheel', (e) => {
+  useEventListener(container, 'wheel', (e) => {
     e.preventDefault()
     e.stopPropagation()
     e.stopImmediatePropagation()
@@ -388,7 +391,7 @@ export function useViewportControl(
     }
   })
 
-  useEventListener(target, 'contextmenu', (event) => {
+  useEventListener(container, 'contextmenu', (event) => {
     if (event.shiftKey) {
       return
     }
@@ -411,13 +414,13 @@ export function useViewportControl(
     centerImage()
   }
 
-  watch(() => [toValue(_ContentWidth), toValue(_ContentHeight)], () => {
+  watch(() => [toValue(contentWidth), toValue(contentHeight)], () => {
     reset()
   }, {
     immediate: true,
   })
 
-  const { stop } = useResizeObserver(target, () => {
+  const { stop } = useResizeObserver(container, () => {
     reset()
     stop()
   })
@@ -428,8 +431,8 @@ export function useViewportControl(
     transformMatrix,
     transform,
     //
-    width: _ContentWidth,
-    height: _ContentHeight,
+    width: contentWidth,
+    height: contentHeight,
     area,
     //
     zoom,
@@ -441,4 +444,218 @@ export function useViewportControl(
     pad,
     select,
   }
+}
+
+interface UsePointerEvent {
+  event: PointerEvent
+  startX: number
+  startY: number
+  x: number
+  y: number
+  delta: {
+    x: number
+    y: number
+  }
+}
+
+interface PointerAction {
+  down?: (event: UsePointerEvent) => void | boolean
+  move?: (event: UsePointerEvent) => void
+  up?: (event: UsePointerEvent) => void
+}
+
+function usePointerAction(
+  target: MaybeRefOrGetter<HTMLElement | null | undefined>,
+  actions: Record<string, PointerAction>,
+) {
+  const rect = useElementBounding(target)
+
+  const pointer = ref({
+    suppressContextMenu: false,
+    pointerId: undefined as number | undefined,
+    down: false,
+    action: undefined as string | undefined,
+    startX: 0,
+    startY: 0,
+    x: 0,
+    y: 0,
+  })
+
+  useEventListener(target, 'pointerdown', (event) => {
+    if (event.shiftKey || event.ctrlKey) {
+      return
+    }
+
+    if (rect.width.value === 0 || rect.height.value === 0) {
+      return
+    }
+
+    const actionValue = toValue(actions)
+    for (const actionName in actionValue) {
+      const action = actionValue[actionName]
+      if (action.down) {
+        if (event.defaultPrevented) {
+          return
+        }
+
+        const context = {
+          event,
+          startX: event.clientX,
+          startY: event.clientY,
+          x: event.clientX,
+          y: event.clientY,
+          delta: {
+            x: 0,
+            y: 0,
+          },
+        }
+
+        if (action.down(context)) {
+          event.preventDefault()
+          event.stopPropagation()
+          event.stopImmediatePropagation()
+
+          pointer.value = {
+            suppressContextMenu: false,
+            pointerId: event.pointerId,
+            down: true,
+            action: actionName,
+            startX: event.clientX,
+            startY: event.clientY,
+            x: event.clientX,
+            y: event.clientY,
+          }
+        }
+      }
+    }
+  })
+
+  useEventListener('pointermove', (event) => {
+    if (!pointer.value.down || event.pointerId !== pointer.value.pointerId) {
+      return
+    }
+
+    const deltaX = event.clientX - pointer.value.x
+    const deltaY = event.clientY - pointer.value.y
+    pointer.value.x = event.clientX
+    pointer.value.y = event.clientY
+
+    const actionValue = toValue(actions)
+    const action = actionValue[pointer.value.action!]
+
+    if (!action || !action.move) {
+      return
+    }
+
+    action.move({
+      event,
+      startX: pointer.value.startX,
+      startY: pointer.value.startY,
+      x: pointer.value.x,
+      y: pointer.value.y,
+      delta: {
+        x: deltaX,
+        y: deltaY,
+      },
+    })
+  }, {
+    passive: true,
+  })
+
+  useEventListener(['pointerup', 'pointercancel'], (event) => {
+    if (!pointer.value.down || event.pointerId !== pointer.value.pointerId) {
+      return
+    }
+
+    pointer.value.pointerId = undefined
+    pointer.value.down = false
+
+    const actionValue = toValue(actions)
+    const action = actionValue[pointer.value.action!]
+    pointer.value.action = undefined
+
+    if (!action || !action.up) {
+      return
+    }
+
+    action.up({
+      event,
+      startX: pointer.value.startX,
+      startY: pointer.value.startY,
+      x: pointer.value.x,
+      y: pointer.value.y,
+      delta: {
+        x: event.clientX - pointer.value.startX,
+        y: event.clientY - pointer.value.startY,
+      },
+    })
+  }, {
+    passive: true,
+  })
+
+  useEventListener('contextmenu', (event) => {
+    if (event.shiftKey) {
+      return
+    }
+
+    if (pointer.value.suppressContextMenu) {
+      pointer.value.suppressContextMenu = false
+
+      event.preventDefault()
+      event.stopPropagation()
+      event.stopImmediatePropagation()
+    }
+  }, {
+    capture: true,
+    passive: false,
+  })
+
+  return pointer
+}
+
+/**
+ * For convenience, `preventDefault()` is automatically called on the event after the callback is invoked.
+ *
+ * To control this behavior, return `false` from the callback, this will leave the `event` untouched.
+ */
+interface ShortcutHandler {
+  (event: KeyboardEvent): void | boolean
+}
+
+type Shortcuts = {
+  [K in string]: (event: KeyboardEvent) => void | boolean
+}
+
+function useShortcuts<T extends ShortcutHandler | Shortcuts>(
+  shortcuts: MaybeRefOrGetter<T>,
+) {
+  useEventListener('keydown', (event: KeyboardEvent) => {
+    if (event.repeat || event.defaultPrevented) {
+      return
+    }
+
+    const s = toValue(shortcuts)
+
+    if (!s) {
+      return
+    }
+
+    let res: any
+    let called = false
+
+    if (typeof s === 'function') {
+      res = s(event)
+      called = true
+    }
+    else if ('key' in event && typeof s[event.key] === 'function') {
+      res = s[event.key](event)
+      called = true
+    }
+
+    if (called && res !== false) {
+      event.preventDefault()
+      event.stopPropagation()
+      event.stopImmediatePropagation()
+    }
+  })
 }

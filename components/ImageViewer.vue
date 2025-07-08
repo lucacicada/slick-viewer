@@ -1,17 +1,21 @@
 <script setup lang="ts">
-import { ImageIcon, ImageOff, Maximize, RotateCcw, RotateCw, SquarePower, Underline, ZoomIn, ZoomOut } from 'lucide-vue-next'
+import { ImageIcon, ImageOff, Maximize, RotateCcw, RotateCw, ZoomIn, ZoomOut } from 'lucide-vue-next'
 
 defineProps<{
   src: string
   type?: string
 }>()
 
-const containerEl = useTemplateRef('containerRef')
-const contentEl = useTemplateRef('mediaRef')
+const container = useTemplateRef('containerRef')
+const content = useTemplateRef('mediaRef')
 
-const { transform, width, height, area, ...context } = useViewportControl(containerEl, contentEl, {
-  padding: 40,
-})
+const { transform, width, height, area, ...context } = useViewportControl(
+  container,
+  content,
+  {
+    padding: 0,
+  },
+)
 
 const settings = ref({
   showInfo: true,
