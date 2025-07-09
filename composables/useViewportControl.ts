@@ -19,10 +19,10 @@ export function useViewportControl(
 
   const containerBounding = useElementBounding(container)
 
+  let suppressContextMenu = false
+
   const contentWidth = ref(0)
   const contentHeight = ref(0)
-
-  let suppressContextMenu = false
 
   // #region Determine the size of the image or video content.
 
@@ -319,11 +319,11 @@ export function useViewportControl(
         let ry = delta.y * ROTATE_POINTER_SENSITIVITY
 
         // position aware rotation
-        if (event.clientY > containerBounding.height.value) {
+        if (event.clientY > containerBounding.height.value / 2) {
           rx *= -1
         }
 
-        if (event.clientX < containerBounding.width.value) {
+        if (event.clientX < containerBounding.width.value / 2) {
           ry *= -1
         }
 
