@@ -13,7 +13,7 @@ const { transform, width, height, area, ...context } = useViewportControl(
   container,
   content,
   {
-    padding: 0,
+    padding: 20,
   },
 )
 
