@@ -1,4 +1,24 @@
 <script setup lang="ts">
+const { app } = useRuntimeConfig()
+
+useSeoMeta({
+  title: 'Slick Viewer',
+  description: 'Slick Viewer',
+})
+
+useHead({
+  htmlAttrs: {
+    lang: 'en',
+  },
+  link: [
+    {
+      rel: 'icon',
+      type: 'image/svg+xml',
+      href: `${app.baseURL}icon.svg`,
+    },
+  ],
+})
+
 const dropDivEl = useTemplateRef('dropDivRef')
 
 const file = shallowRef<File>()

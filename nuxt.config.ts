@@ -15,15 +15,6 @@ export default defineNuxtConfig({
     rootAttrs: {
       id: 'app',
     },
-    head: {
-      title: 'Slick Viewer',
-      htmlAttrs: {
-        lang: 'en',
-      },
-      link: [
-        { rel: 'icon', href: '/icon.svg', type: 'image/svg+xml' },
-      ],
-    },
   },
 
   css: [
