@@ -242,6 +242,9 @@ export function useViewportControl(
     transformMatrix.value = ctx.matrix.translate(localDeltaX, localDeltaY)
   }
 
+  /**
+   * Select the area, zoom in and pan to the center of the area.
+   */
   function select(area: { x: number, y: number, w: number, h: number }) {
     const ctx = getContextData()
 
@@ -249,21 +252,16 @@ export function useViewportControl(
       return
     }
 
-    const containerW = ctx.container.width
-    const containerH = ctx.container.height
-
     const inv = ctx.matrix.inverse()
+    const origin = inv.transformPoint(new DOMPoint(ctx.container.width / 2, ctx.container.height / 2))
+    const areaCenter = inv.transformPoint(new DOMPoint(area.x + area.w / 2, area.y + area.h / 2))
 
-    const centerContainerX = area.x + area.w / 2
-    const centerContainerY = area.y + area.h / 2
-    const centerImagePt = inv.transformPoint(new DOMPoint(centerContainerX, centerContainerY))
+    const scaleFactor = Math.min(ctx.container.width / area.w, ctx.container.height / area.h)
 
-    const scaleFactor = Math.min(containerW / area.w, containerH / area.h)
-
-    transformMatrix.value = new DOMMatrix()
-      .translate(containerW / 2, containerH / 2)
+    transformMatrix.value = ctx.matrix
+      .translate(origin.x, origin.y)
       .scale(scaleFactor)
-      .translate(-centerImagePt.x, -centerImagePt.y)
+      .translate(-areaCenter.x, -areaCenter.y)
   }
 
   // #endregion
